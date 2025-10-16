@@ -28,3 +28,5 @@ plt.xlabel("Temps (frames)")
 plt.ylabel("Bandes Mel")
 plt.colorbar(label="dB")
 plt.show()
+
+# coucou une modif
