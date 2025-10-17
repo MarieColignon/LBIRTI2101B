@@ -9,7 +9,7 @@ Génération de spectrogramme
 
 Echelle de Mel et Décibel
 
-# Convolutional Neronal Network (CNN)
+# Convolutional Neuronal Network (CNN)
 
 
 # Text-to-Speech
