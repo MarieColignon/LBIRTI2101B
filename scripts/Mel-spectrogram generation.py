@@ -2,7 +2,7 @@ import torchaudio
 import matplotlib.pyplot as plt
 
 # Charger l'audio
-waveform, sr = torchaudio.load("harvard.wav")
+waveform, sr = torchaudio.load("Voix_Vincent1.wav")
 
 # Si stéréo, prendre seulement le canal 0 (gauche) ou faire la moyenne
 if waveform.shape[0] > 1:
@@ -28,5 +28,3 @@ plt.xlabel("Temps (frames)")
 plt.ylabel("Bandes Mel")
 plt.colorbar(label="dB")
 plt.show()
-
-# coucou une modif
