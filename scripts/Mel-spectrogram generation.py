@@ -2,7 +2,10 @@ import torchaudio
 import matplotlib.pyplot as plt
 
 # Charger l'audio
-waveform, sr = torchaudio.load("Voix_Vincent1.wav")
+waveform, sr = torchaudio.load(r"C:\Users\marie\OneDrive\Documents\GitHub\LBIRTI2101B\DATA\data_clean\Voix_Vincent1.wav")
+# waveform, sr = torchaudio.load("Voix_Vincent1.wav") 
+# Le chemin d'accès sera différent chez tout le monde, effacer la ligne 6 (finction en venv local seulement) et modifier la ligne 5 pour que ça fonctionne avec votre chemin d'accès
+# Ne bouger pas les audio de place !!! 
 
 # Si stéréo, prendre seulement le canal 0 (gauche) ou faire la moyenne
 if waveform.shape[0] > 1:
