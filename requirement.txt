@@ -1,0 +1,13 @@
+# tout les packages requis pour faire tourner le programme
+
+# Core
+torch
+torchaudio
+matplotlib
+soundfile
+numpy
+scipy
+
+# CNN
+wespeaker
+
