@@ -1,0 +1,53 @@
+import torch
+import os
+import wespeaker
+from TTS.api import TTS
+import soundfile as sf
+import numpy as np
+
+#chargement du modèle pré-entraîné
+model = wespeaker.load_model('english')
+model.set_device('cuda:0')
+
+#chargement du TTS
+tts = TTS("tts_models/multilingual/multi-dataset/your_tts")
+
+# Chemins des dossiers
+racine_audio = "C:/Users/Vincent/OneDrive/Documents/GitHub/LBIRTI2101B/DATA/enregistrement/"
+racine_embeddings = "C:/Users/Vincent/OneDrive/Documents/GitHub/LBIRTI2101B/DATA/embeddings"
+os.makedirs(racine_embeddings, exist_ok=True)
+
+
+
+# 3. Parcourir toutes les personnes
+for personne in os.listdir(racine_audio):
+    dossier_personne = os.path.join(racine_audio, personne)
+    if not os.path.isdir(dossier_personne):
+        continue
+
+    print(f"Traitement de {personne} ...")
+    embeddings = []
+    embedding_tts = []  
+    for fichier in os.listdir(dossier_personne):
+        if fichier.endswith(".wav"):
+            #wespeaker extract embedding
+            chemin_audio = os.path.join(dossier_personne, fichier)
+            emb = model.extract_embedding(chemin_audio)
+            embeddings.append(emb)
+
+            # your TTS extract embedding 
+            embedding_raw = tts.synthesizer.tts_model.speaker_manager.compute_embedding_from_clip(chemin_audio)
+            embedding = np.array(embedding_raw)
+            embedding_tts.append(embedding)
+
+    if embeddings:
+        # 5. Moyenne des embeddings
+        moyenne = torch.stack(embeddings).mean(dim=0)
+        moyenne_tts = np.mean(np.array(embedding_tts), axis=0)
+
+        speaker_name = personne
+        tts.synthesizer.tts_model.speaker_manager.embeddings_by_names[speaker_name] = [moyenne_tts]
+        # 6. Sauvegarder le vecteur moyen
+        chemin_embed = os.path.join(racine_embeddings, f"{personne}.pt")
+        torch.save(moyenne, chemin_embed)
+        print(f"Embedding moyen sauvegardé pour {personne} : {chemin_embed}")
