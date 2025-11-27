@@ -1,0 +1,99 @@
+import numpy as np
+import librosa
+import pyworld as pw
+from scipy.spatial.distance import euclidean
+from fastdtw import fastdtw
+
+##############################################
+# 1. Mel Cepstral Distortion (MCD)
+##############################################
+def mel_cepstral_distortion(ref_audio, syn_audio, sr):
+    # Extraire les caractéristiques cepstrales (MFCC)
+    ref_mfcc = librosa.feature.mfcc(y=ref_audio, sr=sr, n_mfcc=13)
+    syn_mfcc = librosa.feature.mfcc(y=syn_audio, sr=sr, n_mfcc=13)
+
+    # Dynamic Time Warping (DTW) pour aligner les signaux
+    distance, path = fastdtw(ref_mfcc.T, syn_mfcc.T, dist=euclidean)
+
+    # MCD en dB
+    K = 13
+    mcd = (10 / np.log(10)) * np.sqrt(2 * np.mean([euclidean(ref_mfcc[:, i], syn_mfcc[:, j])
+                                                   for i, j in path]))
+    return mcd
+
+
+##############################################
+# 2. Pitch extraction using WORLD vocoder
+##############################################
+def extract_f0(audio, sr):
+    _f0, t = pw.harvest(audio.astype(np.float64), sr)
+    f0 = pw.stonemask(audio.astype(np.float64), _f0, t, sr)
+    return f0
+
+
+##############################################
+# 3. Gross Pitch Error (GPE), 
+#    Voicing Decision Error (VDE),
+#    F0 Frame Error (FFE)
+##############################################
+def compute_pitch_metrics(ref_audio, syn_audio, sr):
+    # Extraire F0 avec WORLD
+    f0_ref = extract_f0(ref_audio, sr)
+    f0_syn = extract_f0(syn_audio, sr)
+
+    # Alignement via DTW
+    distance, path = fastdtw(f0_ref.reshape(-1, 1), f0_syn.reshape(-1, 1), dist=euclidean)
+    aligned_ref = np.array([f0_ref[i] for i, j in path])
+    aligned_syn = np.array([f0_syn[j] for i, j in path])
+
+    # Voicing (0 = non-voisé, 1 = voisé)
+    voiced_ref = aligned_ref > 0
+    voiced_syn = aligned_syn > 0
+
+    # VDE = (erreurs voisé / non-voisé)
+    vde = np.mean(voiced_ref != voiced_syn)
+
+    # GPE = différences F0 importantes (>20%)
+    voiced_frames = np.where(voiced_ref & voiced_syn)[0]
+    if len(voiced_frames) == 0:
+        gpe = 1.0
+    else:
+        f0_diff = np.abs(aligned_ref[voiced_frames] - aligned_syn[voiced_frames])
+        gpe = np.mean(f0_diff / aligned_ref[voiced_frames] > 0.2)
+
+    # FFE = combinaison de VDE + GPE
+    ffe = vde + gpe
+
+    return gpe, vde, ffe
+
+
+##############################################
+# 4. Fonction principale
+##############################################
+def compute_all_metrics(ref_path, syn_path):
+    ref_audio, sr = librosa.load(ref_path, sr=None)
+    syn_audio, _ = librosa.load(syn_path, sr=sr)
+
+    print("Calcul MCD...")
+    mcd = mel_cepstral_distortion(ref_audio, syn_audio, sr)
+
+    print("Calcul F0 metrics...")
+    gpe, vde, ffe = compute_pitch_metrics(ref_audio, syn_audio, sr)
+
+    print("\n===== Résultats =====")
+    print(f"MCD  : {mcd:.4f} dB")
+    print(f"GPE  : {gpe:.4f}")
+    print(f"VDE  : {vde:.4f}")
+    print(f"FFE  : {ffe:.4f}")
+
+    return mcd, gpe, vde, ffe
+
+
+##############################################
+# 5. Exemple d'appel
+##############################################
+if __name__ == "__main__":
+    compute_all_metrics(
+        ref_path="reference.wav",
+        syn_path="synthetise.wav"
+    )
