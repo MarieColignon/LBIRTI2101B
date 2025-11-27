@@ -1,0 +1,192 @@
+"""
+Pré-traitement audio pour TTS / voice-cloning
+- Resample -> mono -> trim silence (option) -> noise-reduction (option) -> normalize -> save
+- Sortie: wav prêt à passer au calcul du mel-spectrogramme (n_mels=80 par ex.)
+"""
+import os
+import torch
+import torchaudio
+import torchaudio.transforms as T
+import numpy as np
+import soundfile as sf
+
+# Optionnel : librosa pour trim simple
+import librosa
+
+# Optionnel : noise reduction (spectral gating)
+try:
+    import noisereduce as nr
+    _HAS_NOISEREDUCE = True
+except Exception:
+    _HAS_NOISEREDUCE = False
+
+# Optionnel : WebRTC VAD
+try:
+    import webrtcvad
+    _HAS_VAD = True
+except Exception:
+    _HAS_VAD = False
+
+def load_audio(path: str):
+    waveform, sr = torchaudio.load(path)  # waveform: (channels, samples)
+    return waveform, sr
+
+def to_mono(waveform: torch.Tensor):
+    if waveform.shape[0] > 1:
+        waveform = waveform.mean(dim=0, keepdim=True)
+    return waveform
+
+def resample_if_needed(waveform: torch.Tensor, orig_sr: int, target_sr: int):
+    if orig_sr == target_sr:
+        return waveform, orig_sr
+    resampler = T.Resample(orig_freq=orig_sr, new_freq=target_sr)
+    waveform_res = resampler(waveform)
+    return waveform_res, target_sr
+
+def trim_silence_librosa(waveform: torch.Tensor, sr: int, top_db: int = 60):
+    """
+    Trim leading/trailing silence using librosa.effects.trim.
+    Returns trimmed waveform (torch.Tensor) and start/end sample indices.
+    """
+    # convert to numpy (mono expected)
+    w_np = waveform.squeeze(0).cpu().numpy()
+    yt, index = librosa.effects.trim(y=w_np, top_db=top_db)
+    yt_torch = torch.from_numpy(yt).unsqueeze(0)
+    return yt_torch, index
+
+def reduce_noise_spectral_gate(waveform: torch.Tensor, sr: int, prop_decrease: float = 1.0):
+    """
+    Spectral gating using noisereduce package.
+    Requires noisereduce installed. Works on numpy arrays.
+    """
+    if not _HAS_NOISEREDUCE:
+        raise RuntimeError("noisereduce not installed. pip install noisereduce")
+    w_np = waveform.squeeze(0).cpu().numpy()
+    reduced = nr.reduce_noise(y=w_np, sr=sr, prop_decrease=prop_decrease)
+    return torch.from_numpy(reduced).unsqueeze(0)
+
+def vad_trim(waveform: torch.Tensor, sr:int, frame_ms:int=30, aggressiveness:int=2):
+    """
+    Use WebRTC VAD to keep voiced segments only (very simple implementation).
+    Requires webrtcvad installed. Frame length must be 10/20/30 ms.
+    Returns concatenated voiced frames as waveform.
+    """
+    if not _HAS_VAD:
+        raise RuntimeError("webrtcvad not installed. pip install webrtcvad")
+    vad = webrtcvad.Vad(aggressiveness)
+    samples = waveform.squeeze(0).numpy()
+    sample_bytes = (samples * 32768).astype(np.int16).tobytes()
+    frame_length = int(sr * (frame_ms / 1000.0))
+    bytes_per_frame = frame_length * 2  # 16-bit
+    voiced_frames = []
+    offset = 0
+    while offset + bytes_per_frame <= len(sample_bytes):
+        chunk = sample_bytes[offset:offset+bytes_per_frame]
+        is_speech = vad.is_speech(chunk, sample_rate=sr)
+        if is_speech:
+            start = offset // 2
+            end = start + frame_length
+            voiced_frames.append(samples[start:end])
+        offset += bytes_per_frame
+    if len(voiced_frames) == 0:
+        # fallback: return original
+        return waveform
+    voiced = np.concatenate(voiced_frames)
+    return torch.from_numpy(voiced).unsqueeze(0)
+
+def peak_normalize(waveform: torch.Tensor, max_amp: float = 0.99):
+    """
+    Normalize waveform so that max absolute amplitude = max_amp (avoid clipping).
+    """
+    peak = waveform.abs().max()
+    if peak == 0:
+        return waveform
+    scale = max_amp / peak
+    return waveform * scale
+
+def rms_normalize(waveform: torch.Tensor, target_db: float = -20.0):
+    """
+    Normalize by RMS to target dBFS (approx).
+    target_db negative dB (e.g. -20 dB FS)
+    """
+    # compute RMS
+    wav = waveform.squeeze(0).float().numpy()
+    eps = 1e-9
+    rms = np.sqrt(np.mean(wav**2) + eps)
+    target_lin = 10.0 ** (target_db / 20.0)
+    scale = target_lin / (rms + eps)
+    return (waveform * scale).float()
+
+def save_wav(path: str, waveform: torch.Tensor, sr: int):
+    # convert to numpy float32 and save with soundfile for portability
+    data = waveform.squeeze(0).cpu().numpy()
+    sf.write(path, data, sr, subtype='PCM_16')
+
+def preprocess_file(
+    infile: str,
+    outfile: str,
+    target_sr: int = 16000,
+    do_trim: bool = True,
+    trim_top_db: int = 60,
+    do_noise_reduction: bool = False,
+    do_vad: bool = False,
+    do_rms_norm: bool = True
+):
+    print(f"Loading {infile}")
+    waveform, sr = load_audio(infile)
+    waveform = to_mono(waveform)
+    waveform, sr = resample_if_needed(waveform, sr, target_sr)
+    print("-> After resample, shape:", waveform.shape, "sr:", sr)
+
+    if do_trim:
+        try:
+            waveform, idx = trim_silence_librosa(waveform, sr, top_db=trim_top_db)
+            print("-> Trimmed silence indices:", idx)
+        except Exception as e:
+            print("Librosa trim failed:", e)
+
+    if do_vad:
+        if _HAS_VAD:
+            try:
+                waveform = vad_trim(waveform, sr)
+                print("-> VAD applied, new shape:", waveform.shape)
+            except Exception as e:
+                print("VAD failed:", e)
+        else:
+            print("VAD requested but not installed. Skipping.")
+
+    if do_noise_reduction:
+        if _HAS_NOISEREDUCE:
+            try:
+                waveform = reduce_noise_spectral_gate(waveform, sr)
+                print("-> Noise reduction applied")
+            except Exception as e:
+                print("Noise reduction failed:", e)
+        else:
+            print("Noise reduction requested but noisereduce not installed. Skipping.")
+
+    # Normalize amplitude
+    if do_rms_norm:
+        waveform = rms_normalize(waveform, target_db=-20.0)
+        print("-> RMS normalization applied (target -20 dBFS)")
+    else:
+        waveform = peak_normalize(waveform, max_amp=0.99)
+        print("-> Peak normalization applied")
+
+    # Save processed file
+    os.makedirs(os.path.dirname(outfile), exist_ok=True)
+    save_wav(outfile, waveform, sr)
+    print("Saved preprocessed file to", outfile)
+    return outfile
+
+if __name__ == "__main__":
+    # exemple d'utilisation
+    infile = "raw/Voix_Vincent1.wav"
+    outfile = "processed/Voix_Vincent1_proc.wav"
+    preprocess_file(infile, outfile,
+                    target_sr=16000,
+                    do_trim=True,
+                    trim_top_db=60,
+                    do_noise_reduction=False,
+                    do_vad=False,
+                    do_rms_norm=True)
